@@ -52,6 +52,8 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Union
 
+from lhotse import load_manifest_lazy
+
 import k2
 import optim
 import sentencepiece as spm
@@ -117,6 +119,12 @@ def add_model_arguments(parser: argparse.ArgumentParser):
         help="Number of zipformer encoder layers, comma separated.",
     )
 
+    parser.add_argument(
+        "--manifest-dir",
+        type=str,
+        default="data/",
+        help="manifest-dir",
+    )
     parser.add_argument(
         "--feedforward-dims",
         type=str,
@@ -1039,14 +1047,11 @@ def run(rank, world_size, args):
     if params.inf_check:
         register_inf_check_hooks(model)
 
-    librispeech = LibriSpeechAsrDataModule(args)
+    asr = LibriSpeechAsrDataModule(args)
 
-    if params.mini_libri:
-        train_cuts = librispeech.train_clean_5_cuts()
-    elif params.full_libri:
-        train_cuts = librispeech.train_all_shuf_cuts()
-    else:
-        train_cuts = librispeech.train_clean_100_cuts()
+    train_cuts = load_manifest_lazy(
+        f"{args.manifest_dir}/cuts_train.jsonl.gz"
+    )
 
     def remove_short_and_long_utt(c: Cut):
         # Keep only utterances with duration between 1 second and 20 seconds
@@ -1091,16 +1096,14 @@ def run(rank, world_size, args):
     else:
         sampler_state_dict = None
 
-    train_dl = librispeech.train_dataloaders(
+    train_dl = asr.train_dataloaders(
         train_cuts, sampler_state_dict=sampler_state_dict
     )
 
-    if params.mini_libri:
-        valid_cuts = librispeech.dev_clean_2_cuts()
-    else:
-        valid_cuts = librispeech.dev_clean_cuts()
-        valid_cuts += librispeech.dev_other_cuts()
-    valid_dl = librispeech.valid_dataloaders(valid_cuts)
+    valid_cuts = load_manifest_lazy(
+        f"{args.manifest_dir}/cuts_eval.jsonl.gz"
+    )
+    valid_dl = asr.valid_dataloaders(valid_cuts)
 
     if not params.print_diagnostics:
         scan_pessimistic_batches_for_oom(
