@@ -9,12 +9,13 @@ set -eou pipefail
 METADATA_CSV=${METADATA_CSV:-../../../data/metadata.csv}
 GIPFORMER_DIR=${GIPFORMER_DIR:-../../../data/gipformer}
 EXP_DIR=${EXP_DIR:-zipformer/exp_zac}
+WORLD_SIZE=${WORLD_SIZE:-1}
 MAX_DURATION=${MAX_DURATION:-60}
 NUM_EPOCHS=${NUM_EPOCHS:-10}
 BASE_LR=${BASE_LR:-0.001}
 
 python zipformer/finetune.py \
-  --world-size 1 \
+  --world-size "$WORLD_SIZE" \
   --num-epochs "$NUM_EPOCHS" \
   --start-epoch 1 \
   --exp-dir "$EXP_DIR" \
