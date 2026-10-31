@@ -74,9 +74,10 @@ import torch.nn as nn
 from asr_datamodule import LibriSpeechAsrDataModule
 from decoder import Decoder
 from joiner import Joiner
-from lhotse.cut import Cut, CutSet
+from lhotse.cut import Cut
 from lhotse.dataset.sampling.base import CutSampler
 from lhotse.utils import fix_random_seed
+from metadata_cuts import load_metadata_cuts
 from model import AsrModel
 from optim import Eden, ScaledAdam
 from scaling import ScheduledFloat
@@ -379,6 +380,35 @@ def get_parser():
     )
 
     parser.add_argument(
+        "--metadata-csv",
+        type=Path,
+        default=Path("../../../data/metadata.csv"),
+        help="CSV with columns text and audio_path. Relative audio paths are "
+        "resolved against the directory of this file.",
+    )
+
+    parser.add_argument(
+        "--dev-ratio",
+        type=float,
+        default=0.08,
+        help="Fraction of conversations in metadata.csv held out for validation.",
+    )
+
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help="Seed of the train/dev split. Use the same value in decode.py.",
+    )
+
+    parser.add_argument(
+        "--warm-step",
+        type=int,
+        default=2000,
+        help="Number of batches over which the transducer loss scales are warmed up.",
+    )
+
+    parser.add_argument(
         "--base-lr",
         type=float,
         default=0.0045,
@@ -589,7 +619,6 @@ def get_params() -> AttributeDict:
             # parameters for zipformer
             "feature_dim": 80,
             "subsampling_factor": 4,  # not passed in, this is fixed.
-            "warm_step": 2000,
             "env_info": get_env_info(),
         }
     )
@@ -1294,20 +1323,12 @@ def run(rank, world_size, args):
     if params.inf_check:
         register_inf_check_hooks(model)
 
-    librispeech = LibriSpeechAsrDataModule(args)
+    asr_datamodule = LibriSpeechAsrDataModule(args)
 
-    gigaspeech_cuts = librispeech.gigaspeech_subset_small_cuts()
-    if params.use_mux:
-        librispeech_cuts = librispeech.train_all_shuf_cuts()
-        train_cuts = CutSet.mux(
-            gigaspeech_cuts,  # num cuts = 688182
-            librispeech_cuts,  # num cuts = 843723
-            weights=[688182, 843723],
-            stop_early=True,
-        )
-    else:
-        train_cuts = gigaspeech_cuts
-    logging.info(train_cuts)
+    train_cuts, valid_cuts = load_metadata_cuts(
+        params.metadata_csv, params.dev_ratio, params.split_seed
+    )
+    logging.info(f"Train cuts: {len(train_cuts)}, dev cuts: {len(valid_cuts)}")
 
     def remove_short_and_long_utt(c: Cut):
         # Keep only utterances with duration between 1 second and 20 seconds
@@ -1330,13 +1351,15 @@ def run(rank, world_size, args):
 
         # In ./zipformer.py, the conv module uses the following expression
         # for subsampling
-        T = ((c.num_frames - 7) // 2 + 1) // 2
+        # Features are computed on the fly, so c.num_frames is not available.
+        num_frames = int(c.duration * 100)
+        T = ((num_frames - 7) // 2 + 1) // 2
         tokens = sp.encode(c.supervisions[0].text, out_type=str)
 
         if T < len(tokens):
             logging.warning(
                 f"Exclude cut with ID {c.id} from training. "
-                f"Number of frames (before subsampling): {c.num_frames}. "
+                f"Number of frames (before subsampling): {num_frames}. "
                 f"Number of frames (after subsampling): {T}. "
                 f"Text: {c.supervisions[0].text}. "
                 f"Tokens: {tokens}. "
@@ -1355,19 +1378,12 @@ def run(rank, world_size, args):
     else:
         sampler_state_dict = None
 
-    train_dl = librispeech.train_dataloaders(
+    train_dl = asr_datamodule.train_dataloaders(
         train_cuts, sampler_state_dict=sampler_state_dict
     )
 
-    valid_cuts = librispeech.dev_clean_cuts()
-    valid_cuts += librispeech.dev_other_cuts()
-    gigaspeech_dev_cuts = librispeech.gigaspeech_dev_cuts()
-
-    valid_sets = ["librispeech", "gigaspeech"]
-    valid_dls = [
-        librispeech.valid_dataloaders(valid_cuts),
-        librispeech.valid_dataloaders(gigaspeech_dev_cuts),
-    ]
+    valid_sets = ["dev"]
+    valid_dls = [asr_datamodule.valid_dataloaders(valid_cuts)]
 
     if not params.print_diagnostics:
         scan_pessimistic_batches_for_oom(

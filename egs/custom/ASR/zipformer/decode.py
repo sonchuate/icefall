@@ -122,6 +122,7 @@ from beam_search import (
     modified_beam_search_LODR,
 )
 from lhotse import set_caching_enabled
+from metadata_cuts import load_metadata_cuts
 from train import add_model_arguments, get_model, get_params
 
 from icefall import ContextGraph, LmScorer, NgramLm
@@ -192,6 +193,27 @@ def get_parser():
         type=str,
         default="zipformer/exp",
         help="The experiment dir",
+    )
+
+    parser.add_argument(
+        "--metadata-csv",
+        type=Path,
+        default=Path("../../../data/metadata.csv"),
+        help="CSV with columns text and audio_path.",
+    )
+
+    parser.add_argument(
+        "--dev-ratio",
+        type=float,
+        default=0.08,
+        help="Must match the value used in finetune.py.",
+    )
+
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=42,
+        help="Must match the value used in finetune.py.",
     )
 
     parser.add_argument(
@@ -1040,16 +1062,14 @@ def main():
 
     # we need cut ids to display recognition results.
     args.return_cuts = True
-    librispeech = LibriSpeechAsrDataModule(args)
+    asr_datamodule = LibriSpeechAsrDataModule(args)
 
-    test_clean_cuts = librispeech.test_clean_cuts()
-    test_other_cuts = librispeech.test_other_cuts()
+    _, dev_cuts = load_metadata_cuts(
+        args.metadata_csv, args.dev_ratio, args.split_seed
+    )
 
-    test_clean_dl = librispeech.test_dataloaders(test_clean_cuts)
-    test_other_dl = librispeech.test_dataloaders(test_other_cuts)
-
-    test_sets = ["test-clean", "test-other"]
-    test_dl = [test_clean_dl, test_other_dl]
+    test_sets = ["dev"]
+    test_dl = [asr_datamodule.test_dataloaders(dev_cuts)]
 
     for test_set, test_dl in zip(test_sets, test_dl):
         results_dict = decode_dataset(

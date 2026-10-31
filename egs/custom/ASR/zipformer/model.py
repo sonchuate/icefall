@@ -173,13 +173,15 @@ class AsrModel(nn.Module):
         # Compute CTC log-prob
         ctc_output = self.ctc_output(encoder_out)  # (N, T, C)
 
-        ctc_loss = torch.nn.functional.ctc_loss(
-            log_probs=ctc_output.permute(1, 0, 2),  # (T, N, C)
-            targets=targets.cpu(),
-            input_lengths=encoder_out_lens.cpu(),
-            target_lengths=target_lengths.cpu(),
-            reduction="sum",
-        )
+        # cuDNN's CTC loss fails with CUDNN_STATUS_EXECUTION_FAILED under WSL.
+        with torch.backends.cudnn.flags(enabled=False):
+            ctc_loss = torch.nn.functional.ctc_loss(
+                log_probs=ctc_output.permute(1, 0, 2),  # (T, N, C)
+                targets=targets.cpu(),
+                input_lengths=encoder_out_lens.cpu(),
+                target_lengths=target_lengths.cpu(),
+                reduction="sum",
+            )
         return ctc_loss
 
     def forward_cr_ctc(
